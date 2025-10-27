@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Reimpresión de Guías</title>
+  <style>
+    body{font-family:Segoe UI, Roboto, Arial; margin:16px; background:#f6f7fb;}
+    .card{background:#fff;border:1px solid #e3e6ef;border-radius:6px;padding:16px;margin-bottom:12px;}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+    input,select,button{padding:8px;border:1px solid #ccd; border-radius:4px;}
+    table{width:100%;border-collapse:collapse;margin-top:12px;}
+    th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;font-size:14px;}
+    th{background:#fafafd;font-weight:600;}
+    .btn{cursor:pointer;background:#2563eb;color:#fff;border:none;}
+    .btn.secondary{background:#6b7280;}
+    .small{font-size:13px;padding:6px 8px}
+    .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.4);}
+    .modal .box{background:#fff;padding:16px;border-radius:6px;max-width:900px;width:95%;max-height:90vh;overflow:auto;}
+    .hidden{display:none;}
+  </style>
+</head>
+<body>
+  <h2>Reimpresión de Guías</h2>
+
+  <div class="card">
+    <div class="row">
+      <label>Fuente:
+        <select id="source">
+          <!-- Mapea a tablas: t_impresion_guias, t_impresion_guias_lm, t_repo_guias -->
+          <option value="t_impresion_guias">Impresiones (t_impresion_guias)</option>
+          <option value="t_impresion_guias_lm">Impresiones LM (t_impresion_guias_lm)</option>
+          <option value="t_repo_guias">Repositorio (t_repo_guias)</option>
+        </select>
+      </label>
+
+      <label>Número / Remitente / Destinatario:
+        <input id="q" type="search" placeholder="Buscar por número o texto..." />
+      </label>
+
+      <label>Desde:
+        <input id="from" type="date" />
+      </label>
+      <label>Hasta:
+        <input id="to" type="date" />
+      </label>
+
+      <button id="searchBtn" class="btn small">Buscar</button>
+      <button id="refreshBtn" class="btn secondary small">Refrescar</button>
+    </div>
+
+    <div id="meta" style="margin-top:8px;font-size:13px;color:#444"></div>
+
+    <table id="results" class="card" aria-live="polite">
+      <thead>
+        <tr>
+          <th>ID</th><th>Fecha</th><th>Número</th><th>Remitente</th><th>Destinatario</th><th>Ciudad</th><th>Estado</th><th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <div style="margin-top:8px;">
+      <button id="prev" class="small">Anterior</button>
+      <button id="next" class="small">Siguiente</button>
+      <span id="pageInfo" style="margin-left:8px;font-size:13px"></span>
+    </div>
+  </div>
+
+  <!-- Modal preview -->
+  <div id="modal" class="modal" role="dialog" aria-modal="true">
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>Vista previa de la guía</strong>
+        <button id="closeModal" class="btn secondary small">Cerrar</button>
+      </div>
+      <hr />
+      <pre id="preview" style="white-space:pre-wrap;font-size:13px"></pre>
+      <div style="margin-top:12px;text-align:right">
+        <button id="reprintFromModal" class="btn small">Reimprimir</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // NOTA: Estas rutas son ejemplos. Ajustar a sus endpoints/servidor.
+    // Se espera un JSON array desde GET /api/{source}?q=...&from=...&to=...&page=...
+    // Y un POST a /api/{source}/{id}/reprint para reimprimir (devuelve { ok: true, jobId: ... }).
+    const state = { page: 1, pageSize: 20, currentPreview: null };
+
+    const els = {
+      source: document.getElementById('source'),
+      q: document.getElementById('q'),
+      from: document.getElementById('from'),
+      to: document.getElementById('to'),
+      searchBtn: document.getElementById('searchBtn'),
+      refreshBtn: document.getElementById('refreshBtn'),
+      tbody: document.querySelector('#results tbody'),
+      meta: document.getElementById('meta'),
+      prev: document.getElementById('prev'),
+      next: document.getElementById('next'),
+      pageInfo: document.getElementById('pageInfo'),
+      modal: document.getElementById('modal'),
+      preview: document.getElementById('preview'),
+      closeModal: document.getElementById('closeModal'),
+      reprintFromModal: document.getElementById('reprintFromModal'),
+    };
+
+    async function loadGuides() {
+      const source = els.source.value;
+      const q = els.q.value.trim();
+      const from = els.from.value;
+      const to = els.to.value;
+      const page = state.page;
+
+      els.meta.textContent = 'Cargando...';
+      els.tbody.innerHTML = '';
+
+      // Cambiar la URL según su API
+      const params = new URLSearchParams({ q, from, to, page, pageSize: state.pageSize });
+      const url = `/api/${source}?` + params.toString();
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Error en la petición');
+        const payload = await res.json();
+        // payload: { data: [...], total: 123 } es recomendado
+        const data = Array.isArray(payload) ? payload : (payload.data || []);
+        const total = payload.total || (Array.isArray(payload) ? data.length : 0);
+
+        renderTable(data);
+        els.meta.textContent = `Fuente: ${source} — ${total} resultados`;
+        els.pageInfo.textContent = `Página ${state.page} — total aproximado ${total}`;
+      } catch (err) {
+        els.meta.textContent = 'Error cargando guías: ' + (err.message || err);
+      }
+    }
+
+    function renderTable(rows) {
+      els.tbody.innerHTML = '';
+      if (!rows.length) {
+        els.tbody.innerHTML = '<tr><td colspan="8" style="color:#666">No hay resultados</td></tr>';
+        return;
+      }
+
+      for (const r of rows) {
+        // Mapear campos según su esquema real.
+        const id = r.id ?? r.guia_id ?? r.codigo ?? '';
+        const fecha = r.fecha ?? r.created_at ?? '';
+        const numero = r.numero ?? r.n_guia ?? r.reference ?? '';
+        const remitente = r.remitente ?? r.sender ?? '';
+        const destinatario = r.destinatario ?? r.receiver ?? '';
+        const ciudad = r.ciudad ?? r.city ?? '';
+        const estado = r.estado ?? r.status ?? '';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${id}</td>
+          <td>${fecha}</td>
+          <td>${numero}</td>
+          <td>${remitente}</td>
+          <td>${destinatario}</td>
+          <td>${ciudad}</td>
+          <td>${estado}</td>
+          <td>
+            <button class="small" data-action="preview" data-id="${id}">Vista</button>
+            <button class="small" data-action="reprint" data-id="${id}">Reimprimir</button>
+          </td>
+        `;
+        els.tbody.appendChild(tr);
+      }
+    }
+
+    els.tbody.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const action = btn.dataset.action;
+      if (action === 'preview') previewGuide(id);
+      if (action === 'reprint') reprintGuide(id);
+    });
+
+    async function previewGuide(id) {
+      const source = els.source.value;
+      els.preview.textContent = 'Cargando...';
+      els.modal.style.display = 'flex';
+      state.currentPreview = { id, source };
+
+      try {
+        const res = await fetch(`/api/${source}/${id}`);
+        if (!res.ok) throw new Error('No se pudo obtener la guía');
+        const data = await res.json();
+        // Mostrar de forma legible:
+        els.preview.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        els.preview.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    async function reprintGuide(id) {
+      if (!confirm('¿Desea reimprimir la guía #' + id + '?')) return;
+      const source = els.source.value;
+      try {
+        // Cambiar POST endpoint según su backend
+        const res = await fetch(`/api/${source}/${id}/reprint`, { method: 'POST' });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.message || 'Error al reimprimir');
+        alert('Reimpresión solicitada. ID de trabajo: ' + (payload.jobId || 'n/a'));
+      } catch (err) {
+        alert('Error: ' + (err.message || err));
+      }
+    }
+
+    els.closeModal.addEventListener('click', () => {
+      els.modal.style.display = 'none';
+      state.currentPreview = null;
+    });
+
+    els.reprintFromModal.addEventListener('click', async () => {
+      if (!state.currentPreview) return;
+      await reprintGuide(state.currentPreview.id);
+      els.modal.style.display = 'none';
+    });
+
+    els.searchBtn.addEventListener('click', () => { state.page = 1; loadGuides(); });
+    els.refreshBtn.addEventListener('click', () => loadGuides());
+    els.prev.addEventListener('click', () => { if (state.page>1) { state.page--; loadGuides(); } });
+    els.next.addEventListener('click', () => { state.page++; loadGuides(); });
+
+    // Cargar inicialmente
+    loadGuides();
+  </script>
+</body>
+</html>
